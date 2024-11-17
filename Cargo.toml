@@ -1,0 +1,12 @@
+[package]
+name = "mdblib"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+defmt = "0.3.8"
+embedded-hal = "1.0.0"
+embedded-io = "0.6.1"
+enumn = "0.1.14"
+rp2040-hal = "0.10.2"
+#pio-uart-9bit  = { git = "https://github.com/davidmpye/pio-uart-9bit" }
