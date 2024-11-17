@@ -2,7 +2,6 @@
 
 pub mod coin_acceptor;
 
-pub mod mdb  {
     use enumn::N;
     
     const MDB_TIMEOUT_MS:u8 = 50;
@@ -180,4 +179,4 @@ pub mod mdb  {
             false
         }
     }
-}
+
