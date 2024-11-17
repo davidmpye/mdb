@@ -1,4 +1,6 @@
+use crate::Mdb;
 use crate::MDBResponse;
+use crate::MDBStatus;
 
 //use super::{self as mdb, MDBStatus};
 
@@ -123,7 +125,7 @@ impl CoinAcceptor {
         bus.send_data(&[ SETUP_CMD ]);
         
         let mut buf: [u8;72] = [0x00;72];
-        if let mdb::MDBResponse::Data(size) = bus.receive_response(&mut buf) {
+        if let MDBResponse::Data(size) = bus.receive_response(&mut buf) {
             if size != 23 {
                 defmt::debug!("Error - coin acceptor init received incorrect byte count");
                 return None;
@@ -154,7 +156,7 @@ impl CoinAcceptor {
 
                 let mut features_to_enable:u8 = 0x00;
 
-                if let mdb::MDBResponse::Data(size) = bus.receive_response(&mut buf) {
+                if let MDBResponse::Data(size) = bus.receive_response(&mut buf) {
                     if size != 33 { 
                         defmt::debug!("Coin acceptor L3 identify command received wrong length reply");
                     }
@@ -241,7 +243,7 @@ impl CoinAcceptor {
             bus.send_data(&[0x0F, 0x04]);
             let reply = bus.receive_response(&mut buf);
             match reply {
-                mdb::MDBResponse::StatusMsg(status)=> {
+                MDBResponse::StatusMsg(status)=> {
                     match status {
                         MDBStatus::ACK => {
                             defmt::debug!("ACK - payout allegedly finished");
@@ -261,7 +263,7 @@ impl CoinAcceptor {
                         _=>{},
                     }
                 }
-                mdb::MDBResponse::Data(count) => {
+                MDBResponse::Data(count) => {
                     defmt::debug!("Data {=[u8]:#04x}", buf[0..count]);
                 }
 
@@ -284,12 +286,12 @@ impl CoinAcceptor {
         let poll_response = bus.receive_response(&mut buf);
         //Parse response
         match poll_response {
-            mdb::MDBResponse::StatusMsg(status) => {
+            MDBResponse::StatusMsg(status) => {
                 if matches!(status, mdb::MDBStatus::ACK) {
                     //nothing to report;
                 }
             },
-            mdb::MDBResponse::Data(count) => {
+            MDBResponse::Data(count) => {
                 //small state machine to handle 2 byte nature of potential messages.
                 enum ParseState {
                     ManualDispense(u8),
