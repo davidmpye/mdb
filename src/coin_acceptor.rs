@@ -1,6 +1,6 @@
 use crate::MDBResponse;
 
-use super::{self as mdb, MDBStatus};
+//use super::{self as mdb, MDBStatus};
 
 use defmt::Format;
 use enumn::N;
@@ -112,7 +112,7 @@ pub enum OptionalFeature {
 }
 
 impl CoinAcceptor {
-    pub fn init<T:embedded_io::Write + embedded_io::Read>(bus : &mut super::mdb::Mdb<T>) -> Option<Self> {
+    pub fn init<T:embedded_io::Write + embedded_io::Read>(bus : &mut Mdb<T>) -> Option<Self> {
         //Start with a reset
         bus.send_data(&[RESET_CMD]);
         
@@ -209,12 +209,12 @@ impl CoinAcceptor {
         return None;
     }
 
-    pub fn set_enabled_coins<T:embedded_io::Write + embedded_io::Read>(&mut self, bus : &mut super::mdb::Mdb<T>, coin_mask: u16) -> bool {
+    pub fn set_enabled_coins<T:embedded_io::Write + embedded_io::Read>(&mut self, bus : &mut Mdb<T>, coin_mask: u16) -> bool {
         //Which coins you want to enable - NB We enable manual dispense for all coins automatically.
         bus.send_data_and_confirm_ack(&[ COIN_TYPE_CMD, (coin_mask&0xFF) as u8, ((coin_mask>>8)&0xFF) as u8, 0xFF, 0xFF ])
     }
 
-    pub fn payout_l3<T:embedded_io::Write + embedded_io::Read>(&mut self, bus : &mut super::mdb::Mdb<T>, credit: u16) -> u16 {
+    pub fn payout_l3<T:embedded_io::Write + embedded_io::Read>(&mut self, bus : &mut Mdb<T>, credit: u16) -> u16 {
         //Scale the payout amount by the coin reader's acceptor amount
         let credit_scaled = credit / self.scaling_factor as u16;
     
@@ -271,7 +271,7 @@ impl CoinAcceptor {
 
     }
 
-    pub fn poll<T:embedded_io::Write + embedded_io::Read>(&mut self, bus : &mut super::mdb::Mdb<T>) -> [Option<PollEvent>;16] {
+    pub fn poll<T:embedded_io::Write + embedded_io::Read>(&mut self, bus : &mut Mdb<T>) -> [Option<PollEvent>;16] {
         //You might get up to 16 poll events and you should process them in order..
         let mut poll_results:[Option<PollEvent>;16] = [None;16];
         let mut result_count:usize = 0;
