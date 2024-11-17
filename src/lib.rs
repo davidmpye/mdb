@@ -1,3 +1,5 @@
+#![no_std]
+
 pub mod coin_acceptor;
 
 pub mod mdb  {
