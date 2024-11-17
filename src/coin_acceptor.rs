@@ -287,7 +287,7 @@ impl CoinAcceptor {
         //Parse response
         match poll_response {
             MDBResponse::StatusMsg(status) => {
-                if matches!(status, mdb::MDBStatus::ACK) {
+                if matches!(status, MDBStatus::ACK) {
                     //nothing to report;
                 }
             },
