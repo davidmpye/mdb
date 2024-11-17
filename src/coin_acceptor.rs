@@ -1,6 +1,6 @@
-use crate::mdb::MDBResponse;
+use crate::MDBResponse;
 
-use super::mdb::{self as mdb, MDBStatus};
+use super::{self as mdb, MDBStatus};
 
 use defmt::Format;
 use enumn::N;
