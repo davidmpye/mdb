@@ -87,8 +87,7 @@ impl<T: embedded_io::Write + embedded_io::Read> Mdb<T> {
                             if bytes_out == 0 {
                                 //If we have received only one byte and the EOM flag is set (ie not a normal message with a checksum),
                                 //then this should be either an ACK or NAK.
-                                let x = MDBStatus::n(*i);
-                                match x {
+                                match  MDBStatus::n(*i) {
                                     Some(status) => {
                                         if matches!(status, MDBStatus::ACK)
                                             || matches!(status, MDBStatus::NAK)
