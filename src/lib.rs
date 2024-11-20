@@ -57,18 +57,21 @@ impl<T: embedded_io::Write + embedded_io::Read> Mdb<T> {
             match self.uart.read(&mut scratch_buf[offset..72]) {
                 Ok(count) => {
                     //Even bytes will be the byte containing just the 9th bit.
-                    let mut top_byte = true;
+                    let mut awaiting_bit_9 = true;
                     for i in scratch_buf[offset..offset + count].iter() {
-                        if top_byte {
+                        if awaiting_bit_9 {
                             if *i == 0x01 {
                                 //If 9th bit is set high, this is the last byte of the message
                                 end_of_message = true;
                             }
-                            top_byte = false;
+                            awaiting_bit_9 = false;
+                            //Nothing else to do with bit 9
+                            continue;
                         } else {
-                            //The next byte the loop will process will be the top byte again
-                            top_byte = true;
+                            //Bit 9 will be coming next
+                            awaiting_bit_9 = true;
                         }
+
                         if !end_of_message {
                             //just a regular byte
                             if buf.len() == bytes_out {
@@ -87,7 +90,7 @@ impl<T: embedded_io::Write + embedded_io::Read> Mdb<T> {
                             if bytes_out == 0 {
                                 //If we have received only one byte and the EOM flag is set (ie not a normal message with a checksum),
                                 //then this should be either an ACK or NAK.
-                                match  MDBStatus::n(*i) {
+                                match MDBStatus::n(*i) {
                                     Some(status) => {
                                         if matches!(status, MDBStatus::ACK)
                                             || matches!(status, MDBStatus::NAK)
