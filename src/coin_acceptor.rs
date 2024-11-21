@@ -119,18 +119,18 @@ pub enum CoinCassetteErrorSubtype {
 
 #[derive(Copy, Clone)]
 pub struct CoinInsertedEvent {
-    coin_type: u8,        //What number coin it is
-    unscaled_value: u16,  //Unscaled value
-    routing: CoinRouting, //where it was routed to
-    coins_remaining: u8,  //what the coin acceptor thinks the tube count now is
+    pub coin_type: u8,        //What number coin it is
+    pub unscaled_value: u16,  //Unscaled value
+    pub routing: CoinRouting, //where it was routed to
+    pub coins_remaining: u8,  //what the coin acceptor thinks the tube count now is
 }
 
 #[derive(Copy, Clone)]
 pub struct ManualDispenseEvent {
-    coin_type: u8,       //type of the coin
-    unscaled_value: u16, //unscaled value
-    number: u8,          //Number of coins dispensed
-    coins_remaining: u8, //Remaining coins
+    pub coin_type: u8,       //type of the coin
+    pub unscaled_value: u16, //unscaled value
+    pub number: u8,          //Number of coins dispensed
+    pub coins_remaining: u8, //Remaining coins
 }
 
 //A poll event might be one of the following:
