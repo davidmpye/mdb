@@ -1,6 +1,7 @@
 #![no_std]
 
 pub mod coin_acceptor;
+pub mod cashless_device;
 
 use enumn::N;
 
