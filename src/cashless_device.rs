@@ -28,8 +28,8 @@ const POLL_REPLY_PERIPHERAL_ID:u8 = 0x09;
 const POLL_REPLY_MALFUNCTION:u8 = 0x0A;
 const POLL_REPLY_OUT_OF_SEQUENCE:u8 = 0x0B;
 
-const POLL_REPLY_REVALUE_APPROVED:u8 = 0x0F;
-const POLL_REPLY_REVALUE_DENIED:u8 = 0x0F;
+const POLL_REPLY_REVALUE_APPROVED:u8 = 0x0D;
+const POLL_REPLY_REVALUE_DENIED:u8 = 0x0E;
 const POLL_REPLY_REVALUE_LIMIT_AMOUNT:u8 = 0x0F;
 const POLL_REPLY_USER_FILE_DATA:u8 = 0x10;
 const POLL_REPLY_TIME_DATE_REQUEST:u8 = 0x11;
@@ -68,6 +68,21 @@ const VEND_REVALUE_LIMIT_REQUEST:u8 = 0x01;
 const VEND_REPLY_REVALUE_APPROVED:u8 = 0x0D;
 const VEND_REPLY_REVALUE_DENIED:u8 = 0x0E;
 const VEND_REPLY_REVALUE_LIMIT_AMOUNT:u8 = 0x0F;
+
+
+//Some multi byte pre-written message to send to device
+//Breakdown - VMC level 3, display with no rows, no columns (none which we will
+//share with the contactless device, anyway!)
+const VMC_SETUP_DATA:[u8;5] = [ 0x11, 0x00, 0x03, 0x00, 0x00, 0x00];
+//Max and min prices set as "dont know"
+const VMC_MAX_MIN_PRICE_DATA:[u8;5] = [ 0x11, 0x01, 0xFF, 0XFF, 0x00, 0x00];
+
+const VMC_EXPANSION_REQUEST_ID_DATA:[u8;30] = [ 0x17, 0x00, 
+    b'D', b'M', b'P',  //Manufacturer ID
+    0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x01, //12 bytes of serial number
+    0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x01, //12 bytes of model number
+    b'0',b'1', //Software version
+];
 
 #[derive(Format)]
 pub enum CashlessDeviceFeatureLevel {
@@ -119,7 +134,7 @@ impl CashlessDevice {
                 }
             },
             POLL_REPLY_SESSION_CANCEL_REQUEST => 1,
-            POLL_REPLY_VEND_APPROVED  => 5,
+            POLL_REPLY_VEND_APPROVED  => 3, //NB would be 5 if expanded currency mode is enabled
             POLL_REPLY_VEND_DENIED => 1,
             POLL_REPLY_END_SESSION => 1,
             POLL_REPLY_CANCELLED => 1,
@@ -146,8 +161,24 @@ impl CashlessDevice {
         }
     }
 
-    pub fn init<T: embedded_io::Write + embedded_io::Read>(bus: &mut Mdb<T>) -> Option<Self> {
+
+    pub fn poll(<T: embedded_io::Write + embedded_io::Read>(bus: &mut Mdb<T>)) {
 
     }
+
+    pub fn init<T: embedded_io::Write + embedded_io::Read>(bus: &mut Mdb<T>) -> Option<Self> {
+        bus.send_data([RESET_CMD]);
+        self.poll(bus);//should get JUST RESET
+        bus.send_data(&VMC_SETUP_DATA);  //if it sends an ack, then the data will come as part of a poll
+
+
+        bus.send_data_and_confirm_ack(&VMC_MAX_MIN_PRICE_DATA);
+
+        bus.send_data(&VMC_EXPANSION_REQUEST_ID_DATA); //as above
+
+
+
+    }
+
 
 }
