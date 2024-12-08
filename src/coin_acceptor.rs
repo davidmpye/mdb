@@ -1,15 +1,10 @@
-use core::fmt::Display;
-
 use crate::MDBResponse;
 use crate::MDBStatus;
 use crate::Mdb;
 
-//use super::{self as mdb, MDBStatus};
-
 use defmt::Format;
 use embedded_hal::delay::DelayNs;
 use enumn::N;
-use rp2040_hal::clocks::ClockGate;
 
 //All coin acceptors should support these commands
 const RESET_CMD: u8 = 0x08;
@@ -30,11 +25,41 @@ const L3_PAYOUT_STATUS_CMD: u8 = 0x03;
 const L3_PAYOUT_VALUE_POLL_CMD: u8 = 0x04;
 const L3_DIAG_CMD: u8 = 0x05;
 
+pub enum L3_OPTIONAL_FEATURE {
+    AltPayout = 0x01,
+    ExtDiag = 0x02,
+    ControlledFillAndPayout = 0x04,
+    Ftl = 0x08,
+}
+
+#[derive(Format)]
+pub struct CoinAcceptor {
+    pub feature_level: CoinAcceptorLevel,
+    pub country_code: [u8; 2],
+    pub scaling_factor: u8,
+    pub decimal_places: u8,
+    pub coin_types: [Option<CoinType>; 16],
+    pub l3_features: Option<CoinAcceptorL3Features>,
+}
+
+#[derive(Format)]
+pub struct CoinAcceptorL3Features {
+    pub manufacturer_code: [u8; 3],
+    pub serial_number: [u8; 12],
+    pub model: [u8; 12],
+    pub software_ver: [u8; 2],
+
+    pub alt_payout_cmd_supported: bool,
+    pub ext_diag_cmd_supported: bool,
+    pub controlled_fill_payout_cmd_supported: bool,
+    pub ftl_cmd_supported: bool,
+}
+
 #[derive(Copy, Clone, Format)]
 pub struct CoinType {
-    pub unscaled_value:u16,
-    pub routeable_to_tube:bool,
-    pub tube_full:bool,
+    pub unscaled_value: u16,
+    pub routeable_to_tube: bool,
+    pub tube_full: bool,
     pub num_coins: u8,
 }
 
@@ -152,37 +177,9 @@ pub enum CoinRouting {
 }
 
 #[derive(Format)]
-pub struct CoinAcceptor {
-    pub feature_level: CoinAcceptorLevel,
-    pub country_code: [u8; 2],
-    pub scaling_factor: u8,
-    pub decimal_places: u8,
-    pub coin_routing: [u8; 2],
-    pub coin_type_credit: [u8; 16],
-    pub l3_features: Option<CoinAcceptorL3Features>,
-}
-
-#[derive(Format)]
-pub struct CoinAcceptorL3Features {
-    pub manufacturer_code: [u8; 3],
-    pub serial_number: [u8; 12],
-    pub model: [u8; 12],
-    pub software_ver: [u8; 2],
-    pub optional_features: [Option<OptionalFeature>; 4],
-}
-
-#[derive(Format)]
 pub enum CoinAcceptorLevel {
     Level2,
     Level3,
-}
-
-#[derive(Format)]
-pub enum OptionalFeature {
-    AlternativePayoutSupported,
-    ExtendedDiagnosticCmdSupported,
-    ControlledManualFillAndPayoutSupported,
-    FileTransferLayerSupported,
 }
 
 impl CoinAcceptor {
@@ -214,10 +211,32 @@ impl CoinAcceptor {
                 country_code: buf[1..3].try_into().unwrap(),
                 scaling_factor: buf[3],
                 decimal_places: buf[4],
-                coin_routing: buf[5..7].try_into().unwrap(),
-                coin_type_credit: buf[7..23].try_into().unwrap(),
                 l3_features: None,
+                coin_types: {
+                    //Parse the coin type data
+                    let mut types: [Option<CoinType>; 16] = [None; 16];
+                    let mut type_count: usize = 0;
+                    for (index, byte) in buf[7..23].into_iter().enumerate() {
+                        if *byte != 0x00 {
+                            types[type_count] = Some(CoinType {
+                                unscaled_value: *byte as u16 * buf[3] as u16,
+                                tube_full: false,
+                                num_coins: 0,
+                                routeable_to_tube: ((buf[5] as u16) << 8 | buf[6] as u16)
+                                    & (0x01 << index)
+                                    != 0,
+                            });
+                            type_count += 1;
+                        }
+                    }
+
+                    types
+                },
             };
+
+            defmt::debug!("Updating coin counts");
+            //Now probe the coin counts and update the above statuses
+            coinacceptor.update_coin_counts(bus);
 
             defmt::debug!("Initial coin acceptor discovery complete");
             //If this is a level 3 coin acceptor, we need to discover its' level 3 features here
@@ -240,62 +259,82 @@ impl CoinAcceptor {
                             model: buf[15..27].try_into().unwrap(),
                             software_ver: buf[27..29].try_into().unwrap(),
 
-                            //Parse the optional feature byte
-                            optional_features: {
-                                let mut features = [None, None, None, None];
-                                let mut feature_count = 0;
-                                if buf[32] & 0x01 == 0x01 {
-                                    features[feature_count] =
-                                        Some(OptionalFeature::AlternativePayoutSupported);
-                                    feature_count += 1;
-                                    //We want to enable this if it is supported
-                                    features_to_enable |= 0x01;
-                                };
-                                if buf[32] & 0x02 == 0x02 {
-                                    features[feature_count] =
-                                        Some(OptionalFeature::ExtendedDiagnosticCmdSupported);
-                                    feature_count += 1;
-                                    //We want to enable this if it is supported
-                                    features_to_enable |= 0x02;
-                                };
-                                if buf[32] & 0x04 == 0x04 {
-                                    features[feature_count] = Some(
-                                        OptionalFeature::ControlledManualFillAndPayoutSupported,
-                                    );
-                                    feature_count += 1;
-                                };
-                                if buf[32] & 0x08 == 0x08 {
-                                    features[feature_count] =
-                                        Some(OptionalFeature::FileTransferLayerSupported);
-                                    feature_count += 1;
-                                };
-                                features
+                            alt_payout_cmd_supported: {
+                                buf[32] & L3_OPTIONAL_FEATURE::AltPayout as u8
+                                    == L3_OPTIONAL_FEATURE::AltPayout as u8
+                            },
+                            ext_diag_cmd_supported: {
+                                buf[32] & L3_OPTIONAL_FEATURE::ExtDiag as u8
+                                    == L3_OPTIONAL_FEATURE::ExtDiag as u8
+                            },
+                            controlled_fill_payout_cmd_supported: {
+                                buf[32] & L3_OPTIONAL_FEATURE::ControlledFillAndPayout as u8
+                                    == L3_OPTIONAL_FEATURE::ControlledFillAndPayout as u8
+                            },
+                            ftl_cmd_supported: {
+                                buf[32] & L3_OPTIONAL_FEATURE::Ftl as u8
+                                    == L3_OPTIONAL_FEATURE::Ftl as u8
                             },
                         };
-                        coinacceptor.l3_features = Some(l3);
 
-                        //If it supports Alt Payout and ExtendedDiags we want to enable those.
-                        if bus.send_data_and_confirm_ack(&[
-                            L3_CMD_PREFIX,
-                            L3_FEATURE_ENABLE_CMD,
-                            0x00,
-                            0x00,
-                            0x00,
-                            features_to_enable,
-                        ]) {
-                            defmt::debug!(
-                                "Desired L3 features enabled - flag {=u8:#x}",
-                                features_to_enable
-                            );
-                        } else {
-                            defmt::debug!("Failed to enable desired L3 features");
+                        //Enable the features we want to use
+                        let mut feature_mask: u8 = 0x00;
+                        if l3.alt_payout_cmd_supported {
+                            features_to_enable |= L3_OPTIONAL_FEATURE::AltPayout as u8;
                         }
+                        if l3.ext_diag_cmd_supported {
+                            features_to_enable |= L3_OPTIONAL_FEATURE::ExtDiag as u8;
+                        }
+                        if coinacceptor.l3_enable_features(bus, feature_mask) {
+                            defmt::debug!("L3 features enabled OK");
+                        } else {
+                            defmt::debug!("L3 features failed to enable");
+                        }
+
+                        //Store the L3 features struct into the coin acceptor
+                        coinacceptor.l3_features = Some(l3);
                     }
                 }
             }
             return Some(coinacceptor);
         }
         return None;
+    }
+
+    pub fn l3_enable_features<T: embedded_io::Write + embedded_io::Read>(
+        &mut self,
+        bus: &mut Mdb<T>,
+        feature_mask: u8,
+    ) -> bool {
+        if !matches!(self.feature_level, CoinAcceptorLevel::Level3) {
+            false
+        } else {
+            bus.send_data_and_confirm_ack(&[
+                L3_CMD_PREFIX,
+                L3_FEATURE_ENABLE_CMD,
+                0x00,
+                0x00,
+                0x00,
+                feature_mask,
+            ])
+        }
+    }
+
+    fn update_coin_counts<T: embedded_io::Write + embedded_io::Read>(&mut self, bus: &mut Mdb<T>) {
+        bus.send_data(&[TUBE_STATUS_CMD]);
+
+        let mut buf: [u8; 18] = [0x00; 18];
+        let reply_len = bus.receive_response(&mut buf);
+
+        let tube_full_status: u16 = (buf[0] as u16) << 8 | (buf[1] as u16) << 8;
+        //Should get 18 bytes back.
+        for i in 0..16 {
+            if let Some(mut cointype) = self.coin_types[i].take() {
+                cointype.num_coins = buf[i + 2];
+                cointype.tube_full = tube_full_status & 0x01 << i != 0x00;
+                self.coin_types[i] = Some(cointype);
+            }
+        }
     }
 
     pub fn enable_coins<T: embedded_io::Write + embedded_io::Read>(
@@ -313,26 +352,116 @@ impl CoinAcceptor {
         ])
     }
 
-    pub fn l3_request_payout<T: embedded_io::Write + embedded_io::Read>(
+    pub fn payout<T: embedded_io::Write + embedded_io::Read>(
         &mut self,
         bus: &mut Mdb<T>,
         credit: u16,
-    ) -> bool {
-        //Scale the payout amount by the coin reader's acceptor amount
-        let credit_scaled = credit / self.scaling_factor as u16;
-
-        defmt::debug!(
-            "Attempting to pay out scaled amount of {=u8}",
-            credit_scaled as u8
-        );
-        if credit_scaled > 255 {
-            //We cannot pay out this much credit in one go....!
-            defmt::debug!("Unable to pay out this much credit - exceeds max amount (amount/scaling factor >255)");
-            return false;
+    ) -> u16 {
+        let use_l3_payout = if let Some(x) = &self.l3_features {
+            false //x.alt_payout_cmd_supported
+        } else {
+            false
         };
 
-        defmt::debug!("Sending payout L3 cmd as {=u8}", credit_scaled as u8);
-        bus.send_data_and_confirm_ack(&[L3_CMD_PREFIX, L3_PAYOUT_CMD, credit_scaled as u8])
+        if use_l3_payout {
+            let credit_scaled = credit / self.scaling_factor as u16;
+            if credit_scaled > 255 {
+                defmt::debug!("Payout value exceeds allowable limit");
+                0
+            } else {
+                bus.send_data_and_confirm_ack(&[L3_CMD_PREFIX, L3_PAYOUT_CMD, credit_scaled as u8]);
+
+                let mut buf: [u8; 16] = [0x00; 16];
+                let mut complete: bool = false;
+
+                while !complete {
+                    bus.send_data(&[L3_CMD_PREFIX, L3_PAYOUT_VALUE_POLL_CMD]);
+                    match bus.receive_response(&mut buf) {
+                        MDBResponse::Data(count) => {
+                            //This is the amount of credit paid out so far, not that interested for now
+                        }
+                        MDBResponse::StatusMsg(x) => match x {
+                            MDBStatus::ACK => {
+                                complete = true;
+                            }
+                            _ => {}
+                        },
+                    }
+                }
+
+                let mut total_paid_out: u16 = 0;
+
+                bus.send_data(&[L3_CMD_PREFIX, L3_PAYOUT_STATUS_CMD]);
+                match bus.receive_response(&mut buf) {
+                    MDBResponse::Data(count) => {
+                        for (i, byte) in buf[0..count].iter().enumerate() {
+                            self.coin_types[i].and_then(|ct| {
+                                total_paid_out += ct.unscaled_value * *byte as u16;
+                                Some(ct)
+                            });
+                        }
+                    }
+                    _ => {}
+                }
+
+                //Update the coin counts to reflect new state post payout
+                self.update_coin_counts(bus);
+
+                defmt::debug!("Total paid out : {=u16}", total_paid_out);
+                total_paid_out
+            }
+        } else {
+            //Need to use L2 fallback
+            //Find the highest coin which divides into our payout amount
+
+            let mut amount_paid: u16 = 0;
+
+            //Reverse order, so starting with the highest valued coins first
+            for (i, c) in self.coin_types.iter().enumerate().rev() {
+                if let Some(coin) = c {
+                    let mut num_to_pay = ((credit - amount_paid) / coin.unscaled_value) as u8;
+
+                    //Cannot pay out more coins than we have in the tube
+                    if num_to_pay as u8 > coin.num_coins {
+                        num_to_pay = coin.num_coins;
+                    }
+
+                    while num_to_pay > 0 {
+                        //Each command can only pay out 16 coins max, so if we want to
+                        //dispense more than 16, we have to send multiple commands
+                        let num_to_dispense = if num_to_pay > 16 { 16 } else { num_to_pay };
+                        //send the command
+                        let b: u8 = i as u8 | num_to_pay << 4;
+                        defmt::debug!(
+                            "Aiming to dispense {=u8} coins of type {=usize}, value {=u16}",
+                            num_to_pay,
+                            i,
+                            coin.unscaled_value
+                        );
+                        /*    if (bus.send_data_and_confirm_ack(&[DISPENSE_CMD, b])) {
+                             defmt::debug!("Cmd ack");
+
+                             amount_paid += coin.unscaled_value * num_to_pay as u16;
+                         }
+                         else {
+                             defmt::debug!("Cmd not acked")
+                         }
+                        */
+
+                        num_to_pay -= num_to_dispense;
+                        amount_paid += coin.unscaled_value * num_to_dispense as u16;
+                    }
+
+                }
+
+                //Paid out all the money
+                if amount_paid == credit {
+                    break;
+                }
+            }
+
+            amount_paid
+        }
     }
 
     pub fn poll<T: embedded_io::Write + embedded_io::Read>(
@@ -348,9 +477,9 @@ impl CoinAcceptor {
 
         //Read poll response - max 16 bytes
         let mut buf: [u8; 16] = [0x00; 16];
-        let poll_response = bus.receive_response(&mut buf);
+
         //Parse response
-        match poll_response {
+        match bus.receive_response(&mut buf) {
             MDBResponse::StatusMsg(status) => {
                 if matches!(status, MDBStatus::ACK) {
                     //nothing to report;
@@ -397,8 +526,15 @@ impl CoinAcceptor {
                             ////Someone has deposited a coin
                             poll_results[result_count] = Some(PollEvent::Coin(CoinInsertedEvent {
                                 coin_type: b & 0x0F,
-                                unscaled_value: self.coin_type_credit[(b & 0x0F) as usize] as u16
-                                    * self.scaling_factor as u16,
+                                unscaled_value: {
+                                    if let Some(ct) = self.coin_types[(b & 0x0F) as usize] {
+                                        ct.unscaled_value
+                                    } else {
+                                        defmt::debug!("Non existent coin deposited!");
+                                        0
+                                    }
+                                },
+                                // * self.scaling_factor as u16,
                                 routing: {
                                     match b & 0x30 {
                                         0x00 => CoinRouting::CashBox,
@@ -421,9 +557,14 @@ impl CoinAcceptor {
                             poll_results[result_count] =
                                 Some(PollEvent::ManualDispense(ManualDispenseEvent {
                                     coin_type: b & 0x0F,
-                                    unscaled_value: self.coin_type_credit[(b & 0x0F) as usize]
-                                        as u16
-                                        * self.scaling_factor as u16,
+                                    unscaled_value: {
+                                        if let Some(ct) = self.coin_types[(b & 0x0F) as usize] {
+                                            ct.unscaled_value
+                                        } else {
+                                            defmt::debug!("Non existent coin manually dispensed!");
+                                            0
+                                        }
+                                    },
                                     number: (b >> 4) & 0x07,
                                     coins_remaining: *byte,
                                 }));
@@ -435,6 +576,7 @@ impl CoinAcceptor {
                 }
             }
         }
+
         poll_results
     }
 
