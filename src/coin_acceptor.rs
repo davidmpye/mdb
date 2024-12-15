@@ -357,107 +357,122 @@ impl CoinAcceptor {
         bus: &mut Mdb<T>,
         credit: u16,
     ) -> u16 {
-        let use_l3_payout = if let Some(x) = &self.l3_features {
-            false //x.alt_payout_cmd_supported
+        let use_l3_payout = if let Some(l3features) = &self.l3_features {
+            l3features.alt_payout_cmd_supported
         } else {
             false
         };
 
-        if use_l3_payout {
-            let credit_scaled = credit / self.scaling_factor as u16;
-            if credit_scaled > 255 {
-                defmt::debug!("Payout value exceeds allowable limit");
-                0
-            } else {
-                bus.send_data_and_confirm_ack(&[L3_CMD_PREFIX, L3_PAYOUT_CMD, credit_scaled as u8]);
+        let amount_paid =  if use_l3_payout {
+            self.payout_level3(bus, credit)
+        } else {
+            self.payout_level2(bus, credit)
+        };
 
-                let mut buf: [u8; 16] = [0x00; 16];
-                let mut complete: bool = false;
+        if amount_paid == credit {
+            defmt::info!("Payout complete");
+        } else {
+            defmt::info!(
+                "Error - incomplete payout.  Requested {}, paid {}",
+                credit,
+                amount_paid
+            );
+        };
 
-                while !complete {
-                    bus.send_data(&[L3_CMD_PREFIX, L3_PAYOUT_VALUE_POLL_CMD]);
-                    match bus.receive_response(&mut buf) {
-                        MDBResponse::Data(count) => {
-                            //This is the amount of credit paid out so far, not that interested for now
-                        }
-                        MDBResponse::StatusMsg(x) => match x {
-                            MDBStatus::ACK => {
-                                complete = true;
-                            }
-                            _ => {}
-                        },
-                    }
+        //Update the coin coints
+        self.update_coin_counts(bus);
+
+        amount_paid
+    }
+
+    pub fn payout_level2<T: embedded_io::Write + embedded_io::Read>(
+        &mut self,
+        bus: &mut Mdb<T>,
+        credit: u16,
+    ) -> u16 {
+        defmt::debug!("Starting Level 2 Payout");
+        let mut amount_paid: u16 = 0;
+        //Reverse order, so starting with the highest valued coins first
+        for (i, c) in self.coin_types.iter().enumerate().rev() {
+            if let Some(coin) = c {
+                let mut num_to_pay = ((credit - amount_paid) / coin.unscaled_value) as u8;
+
+                //Cannot pay out more coins than we have in the tube
+                if num_to_pay as u8 > coin.num_coins {
+                    num_to_pay = coin.num_coins;
                 }
 
-                let mut total_paid_out: u16 = 0;
+                while num_to_pay > 0 {
+                    //Each command can only pay out 16 coins max, so if we want to
+                    //dispense more than 16, we have to send multiple commands
+                    let num_to_dispense = if num_to_pay > 16 { 16 } else { num_to_pay };
+                    //send the command
+                    let b: u8 = i as u8 | num_to_pay << 4;
+                    defmt::debug!(
+                        "Aiming to dispense {=u8} coins of type {=usize}, value {=u16}",
+                        num_to_pay,
+                        i,
+                        coin.unscaled_value
+                    );
+                    if (bus.send_data_and_confirm_ack(&[DISPENSE_CMD, b])) {
+                        defmt::debug!("Payout cmd acked - payout in progress");
+                        amount_paid += coin.unscaled_value * num_to_pay as u16;
+                        num_to_pay -= num_to_dispense;
+                    } else {
+                        defmt::debug!("Payout cmd not acked")
+                    }
+                }
+            }
+            if amount_paid == credit {
+                break;
+            }
+        }
+        amount_paid
+    }
 
-                bus.send_data(&[L3_CMD_PREFIX, L3_PAYOUT_STATUS_CMD]);
+    pub fn payout_level3<T: embedded_io::Write + embedded_io::Read>(
+        &mut self,
+        bus: &mut Mdb<T>,
+        credit: u16,
+    ) -> u16 {
+        defmt::debug!("Starting Level 3 Payout");
+        let credit_scaled = credit / self.scaling_factor as u16;
+        if credit_scaled > 255 {
+            defmt::debug!("Payout value exceeds allowable limit");
+            0
+        } else {
+            bus.send_data_and_confirm_ack(&[L3_CMD_PREFIX, L3_PAYOUT_CMD, credit_scaled as u8]);
+
+            let mut buf: [u8; 16] = [0x00; 16];
+            let mut complete: bool = false;
+
+            while !complete {
+                bus.send_data(&[L3_CMD_PREFIX, L3_PAYOUT_VALUE_POLL_CMD]);
                 match bus.receive_response(&mut buf) {
                     MDBResponse::Data(count) => {
-                        for (i, byte) in buf[0..count].iter().enumerate() {
-                            self.coin_types[i].and_then(|ct| {
-                                total_paid_out += ct.unscaled_value * *byte as u16;
-                                Some(ct)
-                            });
-                        }
+                        //This is the amount of credit paid out so far, not that interested for now
                     }
-                    _ => {}
+                    MDBResponse::StatusMsg(x) => match x {
+                        MDBStatus::ACK => {
+                            complete = true;
+                        }
+                        _ => {}
+                    },
                 }
-
-                //Update the coin counts to reflect new state post payout
-                self.update_coin_counts(bus);
-
-                defmt::debug!("Total paid out : {=u16}", total_paid_out);
-                total_paid_out
             }
-        } else {
-            //Need to use L2 fallback
-            //Find the highest coin which divides into our payout amount
-
             let mut amount_paid: u16 = 0;
 
-            //Reverse order, so starting with the highest valued coins first
-            for (i, c) in self.coin_types.iter().enumerate().rev() {
-                if let Some(coin) = c {
-                    let mut num_to_pay = ((credit - amount_paid) / coin.unscaled_value) as u8;
-
-                    //Cannot pay out more coins than we have in the tube
-                    if num_to_pay as u8 > coin.num_coins {
-                        num_to_pay = coin.num_coins;
+            bus.send_data(&[L3_CMD_PREFIX, L3_PAYOUT_STATUS_CMD]);
+            match bus.receive_response(&mut buf) {
+                MDBResponse::Data(count) => {
+                    for (i, byte) in buf[0..count].iter().enumerate() {
+                        self.coin_types[i].and_then(|ct| {
+                            amount_paid += ct.unscaled_value * *byte as u16;
+                            Some(ct)
+                        });
                     }
-
-                    while num_to_pay > 0 {
-                        //Each command can only pay out 16 coins max, so if we want to
-                        //dispense more than 16, we have to send multiple commands
-                        let num_to_dispense = if num_to_pay > 16 { 16 } else { num_to_pay };
-                        //send the command
-                        let b: u8 = i as u8 | num_to_pay << 4;
-                        defmt::debug!(
-                            "Aiming to dispense {=u8} coins of type {=usize}, value {=u16}",
-                            num_to_pay,
-                            i,
-                            coin.unscaled_value
-                        );
-                        /*    if (bus.send_data_and_confirm_ack(&[DISPENSE_CMD, b])) {
-                             defmt::debug!("Cmd ack");
-
-                             amount_paid += coin.unscaled_value * num_to_pay as u16;
-                         }
-                         else {
-                             defmt::debug!("Cmd not acked")
-                         }
-                        */
-
-                        num_to_pay -= num_to_dispense;
-                        amount_paid += coin.unscaled_value * num_to_dispense as u16;
-                    }
-
                 }
-
-                //Paid out all the money
-                if amount_paid == credit {
-                    break;
-                }
+                _ => {}
             }
 
             amount_paid
