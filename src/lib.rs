@@ -5,7 +5,8 @@ pub mod cashless_device;
 
 use enumn::N;
 
-const MDB_TIMEOUT_MS: u8 = 50;
+//this had to be increased, because the Nayax is slow to reply sometimes!
+const MDB_TIMEOUT_MS: u8 = 100;
 
 #[derive(N)]
 pub enum MDBStatus {

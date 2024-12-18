@@ -378,7 +378,6 @@ impl CoinAcceptor {
                 amount_paid
             );
         };
-
         //Update the coin coints
         self.update_coin_counts(bus);
 
